@@ -5,7 +5,7 @@
       "url": "https://github.com/ilyamiro/media/releases/download/v1.7.3/update_1_7_3.mp4"
     },
     {
-      "version": "1.7.4",
+      "version": "1.7.4-1",
       "url": "",
       "force_startup_overwrite": true,
       "warning_message": "This update contains a major architectural change.\nYour startup overrides MUST be reset to upstream defaults to prevent system issues. I apologize for the inconvinience"

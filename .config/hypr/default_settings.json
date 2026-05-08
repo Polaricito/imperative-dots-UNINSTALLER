@@ -82,7 +82,7 @@
     {"command": "awww-daemon"},
     {"command": "hypridle"},
     {"command": "quickshell -p ~/.config/hypr/scripts/quickshell/Shell.qml"},
-    {"command": "python3 ~/.config/hypr/scripts/quickshell/focustime/focus_daemon.py &"},
+    {"command": "~/.config/hypr/scripts/quickshell/focustime/launch_daemon.sh"},
     {"command": "~/.config/hypr/scripts/init.sh"},
     {"command": "~/.config/hypr/scripts/settings_watcher.sh &"},
     {"command": "playerctld"},
