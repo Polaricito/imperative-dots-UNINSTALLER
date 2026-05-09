@@ -265,7 +265,8 @@ Variants {
             // =========================================================
             // --- PRECISE MATHEMATICAL WAYLAND INPUT MASK
             // =========================================================
-            property var activeMaskAABB: {
+	    property var activeMaskAABB: {
+		if (!floatingWidget.isSidebarVisible) return Qt.rect(0, 0, 0, 0);
                 let cw = sidebarContainer.width;
                 let ch = sidebarContainer.height;
                 let cx = sidebarContainer.x + cw / 2;

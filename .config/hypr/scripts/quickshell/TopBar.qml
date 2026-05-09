@@ -130,32 +130,40 @@ Variants {
                 }
             }
 
-            Timer {
-                interval: 500; running: true; repeat: true
-                onTriggered: {
-                    recPoller.running = false;
-                    recPoller.running = true;
-                }
-            }
-
             Process {
-                id: updatePoller
-                command: ["bash", "-c", "if [ -f " + paths.getCacheDir("updater") + "/update_pending ]; then echo '1'; else echo '0'; fi"]
-                stdout: StdioCollector {
-                    onStreamFinished: {
-                        barWindow.updateAvailable = (this.text.trim() === "1");
-                    }
-                }
-            }
-
-            Timer {
-                interval: 2000; running: true; repeat: true
-                onTriggered: {
-                    updatePoller.running = false;
-                    updatePoller.running = true;
-                }
-            }
-            
+ 	    	id: recWatcher
+ 		running: true
+ 		command: ["bash", "-c", "inotifywait -qq -e create,delete,modify,close_write " + paths.getCacheDir("recording") + "/ 2>/dev/null || sleep 2"]
+ 	        onExited: {
+ 	        	recPoller.running = false;
+ 	         	recPoller.running = true;
+ 	         	running = false;
+ 	         	running = true;
+ 	        }
+	    }	  
+            Process {
+	        id: updatePoller
+	        command: ["bash", "-c", "if [ -f " + paths.getCacheDir("updater") + "/update_pending ]; then echo '1'; else echo '0'; fi"]
+	        running: true
+	        stdout: StdioCollector {
+	            onStreamFinished: {
+	                barWindow.updateAvailable = (this.text.trim() === "1");
+	            }
+	        }
+	    }
+	    
+	    Process {
+	        id: updateWatcher
+	        running: true
+	        command: ["bash", "-c", "inotifywait -qq -e create,delete,close_write " + paths.getCacheDir("updater") + "/ 2>/dev/null || sleep 5"]
+	        onExited: {
+	            updatePoller.running = false;
+	            updatePoller.running = true;
+	            running = false;
+	            running = true;
+	        }
+	    }
+	                
             Process {
                 id: settingsReader
                 command: ["bash", "-c", "cat ~/.config/hypr/settings.json 2>/dev/null || echo '{}'"]
@@ -357,7 +365,7 @@ Variants {
 
             Timer {
                 interval: 1000
-                running: true
+                running: barWindow.musicData !== null && barWindow.musicData.status === "Playing"
                 repeat: true
                 onTriggered: {
                     if (!barWindow.musicData || barWindow.musicData.status !== "Playing") return;

@@ -1,4 +1,10 @@
-#!/usr/bin/env bash
+r!/usr/bin/env bash
+
+# -----------------------------------------------------------------------------
+# GLOBAL VARS
+# -----------------------------------------------------------------------------
+SCRIPTS_DIR="$HOME/.config/hypr/scripts/quickshell"
+SHELL_QML_PATH="$SCRIPTS_DIR/Shell.qml"
 
 # -----------------------------------------------------------------------------
 # FAST PATH: WORKSPACE SWITCHING
@@ -9,10 +15,8 @@ TARGET="$2"
 SUBTARGET="$3"
 
 if [[ "$ACTION" =~ ^[0-9]+$ ]]; then
-    # Derive IPC_FILE without sourcing caching.sh
-    IPC_FILE="${QS_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/quickshell}/widget_state"
-
-    echo "close" > "$IPC_FILE"
+    # Send IPC command directly to Main.qml via Quickshell's native IPC handler
+    quickshell -p "$SHELL_QML_PATH" ipc call main handleCommand "close" "" "" >/dev/null 2>&1
 
     CMD="workspace $ACTION"
     [[ "$TARGET" == "move" ]] && CMD="movetoworkspace $ACTION"
@@ -41,7 +45,6 @@ export MAGICK_THREAD_LIMIT=1
 QS_NETWORK_CACHE="$QS_CACHE_NETWORK"
 mkdir -p "$QS_NETWORK_CACHE" "$THUMB_DIR"
 
-IPC_FILE="$QS_RUN_DIR/widget_state"
 NETWORK_MODE_FILE="$QS_NETWORK_CACHE/mode"
 
 MANIFEST="$THUMB_DIR/.manifest"
@@ -50,8 +53,6 @@ MANIFEST="$THUMB_DIR/.manifest"
 # ZOMBIE WATCHDOG
 # Only runs on slow path — not on every workspace switch
 # -----------------------------------------------------------------------------
-SCRIPTS_DIR="$HOME/.config/hypr/scripts/quickshell"
-SHELL_QML_PATH="$SCRIPTS_DIR/Shell.qml"
 
 if ! pgrep -f "quickshell.*Shell.qml" >/dev/null; then
     quickshell -p "$SHELL_QML_PATH" >/dev/null 2>&1 &
@@ -153,7 +154,7 @@ handle_network_prep() {
 # IPC ROUTING
 # -----------------------------------------------------------------------------
 if [[ "$ACTION" == "close" ]]; then
-    echo "close" > "$IPC_FILE"
+    quickshell -p "$SHELL_QML_PATH" ipc call main handleCommand "close" "" "" >/dev/null 2>&1
     if [[ "$TARGET" == "network" || "$TARGET" == "all" || -z "$TARGET" ]]; then
         if [ -f "$BT_PID_FILE" ]; then
             kill $(cat "$BT_PID_FILE") 2>/dev/null
@@ -168,7 +169,7 @@ if [[ "$ACTION" == "open" || "$ACTION" == "toggle" ]]; then
     if [[ "$TARGET" == "network" ]]; then
         handle_network_prep
         [[ -n "$SUBTARGET" ]] && echo "$SUBTARGET" > "$NETWORK_MODE_FILE"
-        echo "$ACTION:$TARGET:$SUBTARGET" > "$IPC_FILE"
+        quickshell -p "$SHELL_QML_PATH" ipc call main handleCommand "$ACTION" "$TARGET" "$SUBTARGET" >/dev/null 2>&1
         exit 0
     fi
 
@@ -188,9 +189,9 @@ if [[ "$ACTION" == "open" || "$ACTION" == "toggle" ]]; then
             [[ "${EXT,,}" =~ ^(mp4|mkv|mov|webm)$ ]] && TARGET_THUMB="000_$BASE" || TARGET_THUMB="$BASE"
         fi
 
-        echo "$ACTION:$TARGET:$TARGET_THUMB" > "$IPC_FILE"
+        quickshell -p "$SHELL_QML_PATH" ipc call main handleCommand "$ACTION" "$TARGET" "$TARGET_THUMB" >/dev/null 2>&1
     else
-        echo "$ACTION:$TARGET:$SUBTARGET" > "$IPC_FILE"
+        quickshell -p "$SHELL_QML_PATH" ipc call main handleCommand "$ACTION" "$TARGET" "$SUBTARGET" >/dev/null 2>&1
     fi
     exit 0
 fi
