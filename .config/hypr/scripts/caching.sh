@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 export QS_CACHE_DIR="$HOME/.cache/quickshell"
 export QS_STATE_DIR="$HOME/.local/state/quickshell"
-export QS_RUN_DIR="$QS_CACHE_DIR/run"
-export QS_LOG_DIR="$QS_STATE_DIR/logs"
+export QS_RUN_DIR="${XDG_RUNTIME_DIR:-/tmp}/quickshell"
+export QS_LOG_DIR="$QS_RUN_DIR/logs"
 
 mkdir -p "$QS_CACHE_DIR" "$QS_STATE_DIR" "$QS_RUN_DIR" "$QS_LOG_DIR"
 SCRIPT_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"

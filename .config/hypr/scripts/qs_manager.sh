@@ -1,25 +1,41 @@
 #!/usr/bin/env bash
 
 # -----------------------------------------------------------------------------
-# CACHING & MIGRATION
+# FAST PATH: WORKSPACE SWITCHING
+# Must be first — before any sourcing, caching, or pgrep.
 # -----------------------------------------------------------------------------
+ACTION="$1"
+TARGET="$2"
+SUBTARGET="$3"
+
+if [[ "$ACTION" =~ ^[0-9]+$ ]]; then
+    # Derive IPC_FILE without sourcing caching.sh
+    IPC_FILE="${QS_RUN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/quickshell}/widget_state"
+
+    echo "close" > "$IPC_FILE"
+
+    CMD="workspace $ACTION"
+    [[ "$TARGET" == "move" ]] && CMD="movetoworkspace $ACTION"
+    hyprctl --batch "dispatch $CMD" >/dev/null 2>&1
+    exit 0
+fi
+
+# -----------------------------------------------------------------------------
+# SLOW PATH: Everything below only runs for non-workspace actions
+# -----------------------------------------------------------------------------
+
 source "$(dirname "${BASH_SOURCE[0]}")/caching.sh"
 
-# Ensure all needed widget cache dirs exist
 qs_ensure_cache "workspaces"
 qs_ensure_cache "network"
 qs_ensure_cache "wallpaper_picker"
 
-# -----------------------------------------------------------------------------
-# CONSTANTS & ARGUMENTS
-# -----------------------------------------------------------------------------
 BT_PID_FILE="$QS_RUN_DIR/bt_scan_pid"
 BT_SCAN_LOG="$QS_LOG_DIR/bt_scan.log"
 SRC_DIR="${WALLPAPER_DIR:-${srcdir:-$HOME/Pictures/Wallpapers}}"
 THUMB_DIR="$QS_CACHE_WALLPAPER_PICKER/thumbs"
 PREP_LOCK="$QS_RUN_DIR/wallpaper_prep.lock"
 
-# Hard cap: one ImageMagick thread, one job at a time — no CPU spike
 export MAGICK_THREAD_LIMIT=1
 
 QS_NETWORK_CACHE="$QS_CACHE_NETWORK"
@@ -28,25 +44,23 @@ mkdir -p "$QS_NETWORK_CACHE" "$THUMB_DIR"
 IPC_FILE="$QS_RUN_DIR/widget_state"
 NETWORK_MODE_FILE="$QS_NETWORK_CACHE/mode"
 
-ACTION="$1"
-TARGET="$2"
-SUBTARGET="$3"
-
-# -----------------------------------------------------------------------------
-# FAST PATH: WORKSPACE SWITCHING
-# -----------------------------------------------------------------------------
-if [[ "$ACTION" =~ ^[0-9]+$ ]]; then
-    WORKSPACE_NUM="$ACTION"
-    echo "close" > "$IPC_FILE"
-    
-    CMD="workspace $WORKSPACE_NUM"
-    [[ "$2" == "move" ]] && CMD="movetoworkspace $WORKSPACE_NUM"
-    hyprctl --batch "dispatch $CMD" >/dev/null 2>&1
-    exit 0
-fi
-
 MANIFEST="$THUMB_DIR/.manifest"
 
+# -----------------------------------------------------------------------------
+# ZOMBIE WATCHDOG
+# Only runs on slow path — not on every workspace switch
+# -----------------------------------------------------------------------------
+SCRIPTS_DIR="$HOME/.config/hypr/scripts/quickshell"
+SHELL_QML_PATH="$SCRIPTS_DIR/Shell.qml"
+
+if ! pgrep -f "quickshell.*Shell.qml" >/dev/null; then
+    quickshell -p "$SHELL_QML_PATH" >/dev/null 2>&1 &
+    disown
+fi
+
+# -----------------------------------------------------------------------------
+# HELPERS
+# -----------------------------------------------------------------------------
 build_manifest() {
     find "$THUMB_DIR" -maxdepth 1 -type f ! -name '.source_dir' ! -name '.manifest' \
         -printf "%f\n" | sort > "$MANIFEST"
@@ -56,19 +70,15 @@ handle_wallpaper_prep() {
     mkdir -p "$THUMB_DIR"
 
     (
-        # Prevent multiple concurrent generation instances
-        # Moved inside the subshell to track the actual background process
         if [ -f "$PREP_LOCK" ]; then
             if kill -0 "$(cat "$PREP_LOCK")" 2>/dev/null; then
                 exit 0
             fi
         fi
-        # Use $BASHPID to record the PID of this specific background subshell
         echo $BASHPID > "$PREP_LOCK"
 
         export THUMB_DIR SRC_DIR MANIFEST MAGICK_THREAD_LIMIT=1
 
-        # Check for source directory change — wipe thumbs if it moved
         THUMB_SOURCE_FILE="$THUMB_DIR/.source_dir"
         if [ -f "$THUMB_SOURCE_FILE" ]; then
             read -r CACHED_SRC < "$THUMB_SOURCE_FILE"
@@ -92,21 +102,17 @@ handle_wallpaper_prep() {
                -o -iname "*.mov" -o -iname "*.webm" \) \
             -printf "%f\n" | sort > "$SRC_LIST"
 
-        # Remove orphaned thumbnails (source file was deleted)
         comm -23 <(sed 's/^000_//' "$MANIFEST" | sort) "$SRC_LIST" | while read -r orphan; do
             rm -f "$THUMB_DIR/$orphan" "$THUMB_DIR/000_$orphan"
             sed -i "/^${orphan}$/d;/^000_${orphan}$/d" "$MANIFEST"
         done
 
-        # Generate missing thumbnails — strictly one at a time to avoid CPU spikes.
-        # comm -23 gives us files in SRC_LIST that are not yet in MANIFEST.
         while IFS= read -r filename; do
             img="$SRC_DIR/$filename"
             [ -f "$img" ] || continue
 
             extension="${filename##*.}"
 
-            # Convert webp to jpg for better QML compatibility
             if [[ "${extension,,}" == "webp" ]]; then
                 new_img="${img%.*}.jpg"
                 magick "$img" "$new_img" && rm -f "$img"
@@ -117,10 +123,8 @@ handle_wallpaper_prep() {
 
             if [[ "${extension,,}" =~ ^(mp4|mkv|mov|webm)$ ]]; then
                 thumb="$THUMB_DIR/000_$filename"
-                # Clean up any non-prefixed leftover
                 [ -f "$THUMB_DIR/$filename" ] && rm -f "$THUMB_DIR/$filename"
                 if [ ! -f "$thumb" ]; then
-                    # Single-threaded ffmpeg — quiet, low impact
                     ffmpeg -y -ss 00:00:05 -i "$img" -vframes 1 \
                         -threads 1 -f image2 -q:v 2 "$thumb" >/dev/null 2>&1
                     echo "000_$filename" >> "$MANIFEST"
@@ -144,17 +148,6 @@ handle_network_prep() {
     echo $! > "$BT_PID_FILE"
     (nmcli device wifi rescan) >/dev/null 2>&1 &
 }
-
-# -----------------------------------------------------------------------------
-# ZOMBIE WATCHDOG
-# -----------------------------------------------------------------------------
-SCRIPTS_DIR="$HOME/.config/hypr/scripts/quickshell"
-SHELL_QML_PATH="$SCRIPTS_DIR/Shell.qml"
-
-if ! pgrep -f "quickshell.*Shell.qml" >/dev/null; then
-    quickshell -p "$SHELL_QML_PATH" >/dev/null 2>&1 &
-    disown
-fi
 
 # -----------------------------------------------------------------------------
 # IPC ROUTING
@@ -187,14 +180,14 @@ if [[ "$ACTION" == "open" || "$ACTION" == "toggle" ]]; then
         elif command -v swww >/dev/null; then
             CURRENT_SRC=$(swww query 2>/dev/null | grep -o "$SRC_DIR/[^ ]*" | head -n1)
         fi
-        
+
         TARGET_THUMB=""
         if [ -n "$CURRENT_SRC" ]; then
             BASE=$(basename "$CURRENT_SRC")
             EXT="${BASE##*.}"
             [[ "${EXT,,}" =~ ^(mp4|mkv|mov|webm)$ ]] && TARGET_THUMB="000_$BASE" || TARGET_THUMB="$BASE"
         fi
-        
+
         echo "$ACTION:$TARGET:$TARGET_THUMB" > "$IPC_FILE"
     else
         echo "$ACTION:$TARGET:$SUBTARGET" > "$IPC_FILE"
