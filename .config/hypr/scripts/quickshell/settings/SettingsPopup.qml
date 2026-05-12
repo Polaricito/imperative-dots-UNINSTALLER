@@ -1,4 +1,3 @@
-
 import QtQuick
 import QtQuick.Window
 import QtQuick.Effects
@@ -932,15 +931,28 @@ Item {
     property color monSelectedRateAccent: blue
     property int monChangeTrigger: 0
     property var monResAccentColors: [root.pink, root.mauve, root.blue, root.teal, root.yellow, root.peach, root.green, root.red, root.sapphire, root.sky, root.lavender, root.flamingo]
+    
     function getResLabel(w, h) {
-        if (w >= 3840 && h >= 2160) return "4K";
-        if (w >= 2560 && h >= 1440) return "QHD";
-        if (w >= 1920 && h >= 1080) return "FHD";
-        if (w >= 1600 && h >= 900)  return "HD+";
-        if (w >= 1366 && h >= 768)  return "WXGA";
-        if (w >= 1280 && h >= 720)  return "HD";
-        if (w >= 1024 && h >= 768)  return "XGA";
-        if (w >= 800  && h >= 600)  return "SVGA";
+        if (w === 7680 && h === 4320) return "8K UHD";
+        if (w === 5120 && h === 2880) return "5K";
+        if (w === 5120 && h === 1440) return "DQHD";
+        if (w === 4096 && h === 2160) return "DCI 4K";
+        if (w === 3840 && h === 2160) return "4K UHD";
+        if (w === 3840 && h === 1600) return "UW4K";
+        if (w === 3440 && h === 1440) return "UWQHD";
+        if (w === 2560 && h === 1440) return "QHD";
+        if (w === 2560 && h === 1080) return "UWFHD";
+        if (w === 1920 && h === 1200) return "WUXGA";
+        if (w === 1920 && h === 1080) return "FHD";
+        if (w === 1680 && h === 1050) return "WSXGA+";
+        if (w === 1600 && h === 900)  return "HD+";
+        if (w === 1440 && h === 900)  return "WXGA+";
+        if (w === 1366 && h === 768)  return "FWXGA";
+        if (w === 1280 && h === 1024) return "SXGA";
+        if (w === 1280 && h === 800)  return "WXGA";
+        if (w === 1280 && h === 720)  return "HD";
+        if (w === 1024 && h === 768)  return "XGA";
+        if (w === 800  && h === 600)  return "SVGA";
         return w + "×" + h;
     }
     property var monAvailableResolutions: {
@@ -966,11 +978,11 @@ Item {
             let mon = Config.monitorsModel.get(Config.monActiveEditIndex);
             let modes = JSON.parse(mon.availableModes || "[]");
             let rates = [], seen = {};
-            let prefix = mon.resW + "x" + mon.resH + "@";
+            let prefix = Math.round(mon.resW) + "x" + Math.round(mon.resH) + "@";
             for (let m of modes) {
                 if (m.startsWith(prefix)) {
                     let r = Math.round(parseFloat(m.slice(prefix.length).replace("Hz", "")));
-                    if (!seen[r]) { seen[r] = true; rates.push(r); }
+                    if (!isNaN(r) && !seen[r]) { seen[r] = true; rates.push(r); }
                 }
             }
             rates.sort((a,b) => a-b);
@@ -3774,7 +3786,7 @@ Item {
 
                     Item {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: root.s(175)
+                        Layout.preferredHeight: root.s(220)
                         visible: Config.monitorsModel.count <= 1
 
                         Item {
@@ -3889,7 +3901,7 @@ Item {
                     Item {
                         id: multiMonContainer
                         Layout.fillWidth: true
-                        Layout.preferredHeight: root.s(175)
+                        Layout.preferredHeight: root.s(220)
                         visible: Config.monitorsModel.count > 1
                         clip: true
 
@@ -3967,7 +3979,6 @@ Item {
                         }
                     }
 
-
                     GridLayout {
                         id: resGrid
                         Layout.fillWidth: true
@@ -4029,6 +4040,30 @@ Item {
                                         root.monSelectedResAccent = accent;
                                         Config.monitorsModel.setProperty(Config.monActiveEditIndex, "resW", md.w);
                                         Config.monitorsModel.setProperty(Config.monActiveEditIndex, "resH", md.h);
+                                        
+                                        // Auto-sync rate to highest available for this new resolution
+                                        let mon = Config.monitorsModel.get(Config.monActiveEditIndex);
+                                        let modes = JSON.parse(mon.availableModes || "[]");
+                                        let prefix = md.w + "x" + md.h + "@";
+                                        let validRates = [];
+                                        for (let m of modes) {
+                                            if (m.startsWith(prefix)) {
+                                                let r = Math.round(parseFloat(m.slice(prefix.length).replace("Hz", "")));
+                                                if (!isNaN(r)) validRates.push(r);
+                                            }
+                                        }
+                                        if (validRates.length > 0) {
+                                            validRates.sort((a,b) => b-a);
+                                            let currentRate = Math.round(parseFloat(mon.rate));
+                                            let closest = validRates[0];
+                                            let minDiff = 99999;
+                                            for (let r of validRates) {
+                                                let diff = Math.abs(r - currentRate);
+                                                if (diff < minDiff) { minDiff = diff; closest = r; }
+                                            }
+                                            Config.monitorsModel.setProperty(Config.monActiveEditIndex, "rate", closest.toString());
+                                        }
+
                                         root.monChangeTrigger++;
                                         Config.monDelayedLayoutUpdate.restart();
                                     }
@@ -4037,7 +4072,7 @@ Item {
                         }
                     }
 
-                    RowLayout {
+                   RowLayout {
                         Layout.fillWidth: true
                         spacing: root.s(16)
 
@@ -4127,127 +4162,56 @@ Item {
                             Layout.alignment: Qt.AlignVCenter
                             spacing: root.s(6)
 
-                            Text {
-                                text: "Refresh Rate"
-                                font.family: "JetBrains Mono"
-                                font.pixelSize: root.s(11)
-                                color: root.subtext0
-                            }
-
-                            Rectangle {
-                                id: rateDropTrigger
+                            RowLayout {
                                 Layout.fillWidth: true
-                                implicitHeight: root.s(32)
-                                radius: root.s(8)
-                                color: root.surface0
-                                border.color: ratePop.opened ? root.monSelectedRateAccent : root.surface1
-                                border.width: 1
-                                Behavior on border.color { ColorAnimation { duration: 150 } }
-
-                                RowLayout {
-                                    anchors.fill: parent
-                                    anchors.leftMargin: root.s(10)
-                                    anchors.rightMargin: root.s(10)
-                                    spacing: root.s(6)
-                                    Text {
-                                        text: {
-                                            let _ = root.monChangeTrigger;
-                                            if (Config.monitorsModel.count === 0) return "—";
-                                            return Config.monitorsModel.get(Config.monActiveEditIndex).rate + " Hz";
-                                        }
-                                        font.family: "JetBrains Mono"
-                                        font.weight: Font.Bold
-                                        font.pixelSize: root.s(13)
-                                        color: root.monSelectedRateAccent
-                                        Behavior on color { ColorAnimation { duration: 200 } }
-                                    }
-                                    Item { Layout.fillWidth: true }
-                                    Text {
-                                        text: "󰅀"
-                                        font.family: "Iosevka Nerd Font"
-                                        font.pixelSize: root.s(14)
-                                        color: root.subtext0
-                                        rotation: ratePop.opened ? 180 : 0
-                                        Behavior on rotation { NumberAnimation { duration: 200 } }
-                                    }
+                                Text {
+                                    text: "Refresh Rate"
+                                    font.family: "JetBrains Mono"
+                                    font.pixelSize: root.s(11)
+                                    color: root.subtext0
+                                    Layout.fillWidth: true
                                 }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: ratePop.opened ? ratePop.close() : ratePop.open()
-                                }
-
-                                Popup {
-                                    id: ratePop
-                                    y: parent.height + root.s(2)
-                                    width: parent.width
-                                    padding: root.s(4)
-                                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-                                    background: Rectangle {
-                                        color: root.surface0
-                                        border.color: root.surface1
-                                        border.width: 1
-                                        radius: root.s(8)
+                                Text {
+                                    text: {
+                                        let _ = root.monChangeTrigger;
+                                        if (Config.monitorsModel.count === 0) return "—";
+                                        if (rateSlider.numRates > 0) return rateSlider.rates[rateSlider.curIdx] + " Hz";
+                                        return Math.round(parseFloat(Config.monitorsModel.get(Config.monActiveEditIndex).rate) || 60) + " Hz";
                                     }
-                                    contentItem: ColumnLayout {
-                                        spacing: root.s(2)
-                                        Repeater {
-                                            model: root.monAvailableRates
-                                            delegate: Rectangle {
-                                                property int rateVal: root.monAvailableRates[index]
-                                                property bool isSel: {
-                                                    let _ = root.monChangeTrigger;
-                                                    if (Config.monitorsModel.count === 0) return false;
-                                                    return parseInt(Config.monitorsModel.get(Config.monActiveEditIndex).rate) === rateVal;
-                                                }
-                                                Layout.fillWidth: true
-                                                implicitHeight: root.s(28)
-                                                radius: root.s(6)
-                                                color: isSel ? Qt.alpha(root.monSelectedRateAccent, 0.15) : (rateItemMa.containsMouse ? root.surface1 : "transparent")
-                                                Behavior on color { ColorAnimation { duration: 150 } }
-                                                Text {
-                                                    anchors.centerIn: parent
-                                                    text: rateVal + " Hz"
-                                                    font.family: "JetBrains Mono"
-                                                    font.pixelSize: root.s(12)
-                                                    font.weight: isSel ? Font.Bold : Font.Normal
-                                                    color: isSel ? root.monSelectedRateAccent : root.text
-                                                    Behavior on color { ColorAnimation { duration: 150 } }
-                                                }
-                                                MouseArea {
-                                                    id: rateItemMa
-                                                    anchors.fill: parent
-                                                    hoverEnabled: true
-                                                    cursorShape: Qt.PointingHandCursor
-                                                    onClicked: {
-                                                        if (Config.monitorsModel.count === 0) return;
-                                                        Config.monitorsModel.setProperty(Config.monActiveEditIndex, "rate", rateVal.toString());
-                                                        root.monChangeTrigger++;
-                                                        Config.monDelayedLayoutUpdate.restart();
-                                                        ratePop.close();
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                                    font.family: "JetBrains Mono"
+                                    font.weight: Font.Bold
+                                    font.pixelSize: root.s(13)
+                                    color: root.monSelectedRateAccent
+                                    Behavior on color { ColorAnimation { duration: 200 } }
                                 }
                             }
 
                             Item {
                                 id: rateSlider
                                 Layout.fillWidth: true
-                                implicitHeight: root.s(50)
 
                                 property var rates: root.monAvailableRates
                                 property int numRates: rates ? rates.length : 0
+
+                                // Collapse smoothly when there's only 1 (or 0) rates available
+                                Layout.preferredHeight: numRates > 1 ? root.s(50) : 0
+                                opacity: numRates > 1 ? 1.0 : 0.0
+                                visible: Layout.preferredHeight > 0
+                                clip: true
+                                Behavior on Layout.preferredHeight { NumberAnimation { duration: 250; easing.type: Easing.OutExpo } }
+                                Behavior on opacity { NumberAnimation { duration: 200 } }
+
                                 property int curIdx: {
                                     let _ = root.monChangeTrigger;
                                     if (Config.monitorsModel.count === 0 || numRates === 0) return 0;
-                                    let val = parseInt(Config.monitorsModel.get(Config.monActiveEditIndex).rate) || 60;
+                                    let rawRate = Config.monitorsModel.get(Config.monActiveEditIndex).rate;
+                                    let val = Math.round(parseFloat(rawRate));
+                                    if (isNaN(val)) val = rates[rates.length - 1]; 
                                     let best = 0;
-                                    for (let i = 1; i < numRates; i++) {
-                                        if (Math.abs(rates[i] - val) < Math.abs(rates[best] - val)) best = i;
+                                    let minDiff = 99999;
+                                    for (let i = 0; i < numRates; i++) {
+                                        let diff = Math.abs(rates[i] - val);
+                                        if (diff < minDiff) { minDiff = diff; best = i; }
                                     }
                                     return best;
                                 }
