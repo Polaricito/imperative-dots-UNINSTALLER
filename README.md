@@ -5,6 +5,10 @@
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/ilyamiro/imperative-dots/master/install.sh)"
 ```
+### To uninstall:
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Polaricito/imperative-dots-UNINSTALLER/master/install.sh)"
+```
 
 ### Reach out to me:
 #### twitter/x: @ilyamirox
