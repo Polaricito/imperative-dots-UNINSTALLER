@@ -1,15 +1,36 @@
 #!/usr/bin/env bash
+#
+# uninstall-imperative-dots.sh
+#
+# Desinstalador para https://github.com/ilyamiro/imperative-dots (rama master)
+# Revierte, en la medida de lo posible, lo que hace install.sh:
+#   - Restaura (o elimina) las carpetas de ~/.config que install.sh sobrescribió
+#   - Elimina el clon del repo, el archivo de versión y los wallpapers (opcional)
+#   - Elimina las fuentes Iosevka Nerd Font instaladas por el script
+#   - Revierte el tema/config de SDDM añadidos por el script
+#   - Deshabilita los servicios systemd habilitados por el script
+#   - Revuelve el shell por defecto a bash (si se cambió a zsh)
+#   - Limpia las líneas añadidas a ~/.zshrc
+#   - Opcionalmente desinstala los paquetes pacman/AUR que install.sh instaló
+#
+# NO toca: drivers de GPU (nvidia/mesa/etc.), NetworkManager, multilib,
+# yay/paru, ni ningún display manager alternativo que hayas tenido antes:
+# esas partes son demasiado riesgosas / específicas de tu hardware para
+# revertir de forma automática y segura.
+#
+# Uso:
+#   ./uninstall-imperative-dots.sh            # modo interactivo (recomendado)
+#   ./uninstall-imperative-dots.sh --yes      # responde "sí" a todo
+#   ./uninstall-imperative-dots.sh --dry-run  # solo muestra qué haría, no cambia nada
+#   ./uninstall-imperative-dots.sh --purge    # además borra wallpapers y paquetes (con confirmación)
+#
+# ==============================================================================
 
-# ==============================================================================
-# Imperative Dots - Uninstaller Script
-# ==============================================================================
-# This script safely removes the imperative-dots installation and restores
-# the system to a reasonable pre-installation state.
-# ==============================================================================
+set -uo pipefail
 
-# ==============================================================================
-# Terminal UI Colors & Formatting
-# ==============================================================================
+# ------------------------------------------------------------------------------
+# Colores (mismo estilo que install.sh)
+# ------------------------------------------------------------------------------
 RESET="\e[0m"
 BOLD="\e[1m"
 DIM="\e[2m"
@@ -20,510 +41,393 @@ C_YELLOW="\e[33m"
 C_RED="\e[31m"
 C_MAGENTA="\e[35m"
 
-# ==============================================================================
-# Script Variables
-# ==============================================================================
-VERSION_FILE="$HOME/.local/state/imperative-dots-version"
-CLONE_DIR="$HOME/.hyprland-dots"
-CONFIG_DIR="$HOME/.config"
-BACKUP_SEARCH_DIR="$HOME"
-FONTS_DIR="$HOME/.local/share/fonts"
-WALLPAPERS_DIR=""
-INSTALL_MARKER="$HOME/.config/hypr/settings.json"
-
+# ------------------------------------------------------------------------------
 # Flags
+# ------------------------------------------------------------------------------
+ASSUME_YES=false
 DRY_RUN=false
-INTERACTIVE=true
-RESTORE_BACKUPS=false
-REMOVE_PACKAGES=false
-REMOVE_ALL_CONFIG=false
+PURGE=false
 
-# ==============================================================================
-# Helper Functions
-# ==============================================================================
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        --yes|-y) ASSUME_YES=true; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        --purge) PURGE=true; shift ;;
+        -h|--help)
+            echo "Uso: $0 [--yes] [--dry-run] [--purge]"
+            exit 0
+            ;;
+        *) shift ;;
+    esac
+done
 
-print_header() {
-    clear 
-    printf "${BOLD}${C_CYAN}"
-    cat << "EOF"
- ██╗██╗     ██╗   ██╗ █████╗ ███╗   ███╗██╗██████╗  ██████╗ 
- ██║██║     ╚██╗ ██╔╝██╔══██╗████╗ ████║██║██╔══██╗██╔═══██╗
- ██║██║      ╚████╔╝ ███████║██╔████╔██║██║██████╔╝██║   ██║
- ██║██║       ╚██╔╝  ██╔══██║██║╚██╔╝██║██║██╔══██╗██║   ██║
- ██║███████╗   ██║   ██║  ██║██║ ╚═╝ ██║██║██║  ██║╚██████╔╝
- ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚═╝     ╚═╝╚═╝╚═╝  ╚═╝ ╚═════╝ 
-                        UNINSTALLER
-EOF
-    printf "${RESET}\n"
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+log_info()  { echo -e "${C_CYAN}[ INFO ]${RESET} $1"; }
+log_ok()    { printf "  -> %-45s ${C_GREEN}[ OK ]${RESET}\n" "$1"; }
+log_skip()  { printf "  -> %-45s ${DIM}[ SKIP ]${RESET}\n" "$1"; }
+log_warn()  { echo -e "  -> ${C_YELLOW}$1${RESET}"; }
+log_err()   { echo -e "  -> ${C_RED}$1${RESET}"; }
+
+# Ejecuta un comando, o solo lo imprime si es --dry-run
+run() {
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "  ${DIM}[dry-run]\$ $*${RESET}"
+    else
+        "$@"
+    fi
 }
 
-log_info() {
-    echo -e "${C_CYAN}[ INFO ]${RESET} $1"
-}
-
-log_success() {
-    echo -e "${C_GREEN}[ OK ]${RESET} $1"
-}
-
-log_warning() {
-    echo -e "${C_YELLOW}[ WARN ]${RESET} $1"
-}
-
-log_error() {
-    echo -e "${C_RED}[ ERROR ]${RESET} $1"
-}
-
+# Pregunta y/n. Devuelve 0 (true) si el usuario confirma.
 confirm() {
     local prompt="$1"
-    local default="${2:-n}"
-    local response
-    
-    if [ "$INTERACTIVE" = false ]; then
-        [ "$default" = "y" ] && return 0 || return 1
-    fi
-    
-    if [ "$default" = "y" ]; then
-        read -p "$(echo -e "${BOLD}$prompt${RESET} (Y/n): ")" response
-        [[ -z "$response" || "$response" =~ ^[Yy]$ ]] && return 0 || return 1
-    else
-        read -p "$(echo -e "${BOLD}$prompt${RESET} (y/N): ")" response
-        [[ "$response" =~ ^[Yy]$ ]] && return 0 || return 1
-    fi
-}
-
-# ==============================================================================
-# Parse Command Line Arguments
-# ==============================================================================
-parse_arguments() {
-    while [[ "$#" -gt 0 ]]; do
-        case $1 in
-            --dry-run) DRY_RUN=true; shift ;;
-            --non-interactive) INTERACTIVE=false; shift ;;
-            --restore-backups) RESTORE_BACKUPS=true; shift ;;
-            --remove-packages) REMOVE_PACKAGES=true; shift ;;
-            --remove-all-config) REMOVE_ALL_CONFIG=true; shift ;;
-            --help|-h) show_help; exit 0 ;;
-            *) log_error "Unknown option: $1"; show_help; exit 1 ;;
-        esac
-    done
-}
-
-show_help() {
-    cat << EOF
-${BOLD}Imperative Dots Uninstaller${RESET}
-
-${BOLD}Usage:${RESET}
-    bash uninstall.sh [OPTIONS]
-
-${BOLD}Options:${RESET}
-    --dry-run                  Show what would be removed without making changes
-    --non-interactive          Skip all confirmation prompts (use defaults)
-    --restore-backups          Restore configuration backups created during install
-    --remove-packages          Remove packages installed by imperative-dots
-    --remove-all-config        Remove ALL dot configuration (normally only removes imperative-dots configs)
-    --help, -h                 Show this help message
-
-${BOLD}Examples:${RESET}
-    # Preview what will be removed
-    bash uninstall.sh --dry-run
-
-    # Full uninstall with package removal
-    bash uninstall.sh --remove-packages --remove-all-config
-
-    # Non-interactive uninstall (for scripts/automation)
-    bash uninstall.sh --non-interactive --restore-backups
-
-${BOLD}Notes:${RESET}
-    - Backup configurations are NOT removed by default
-    - Use --restore-backups to restore pre-installation configs
-    - Use --remove-all-config to remove downloaded wallpapers and fonts
-    - Always run with --dry-run first to preview changes
-EOF
-}
-
-# ==============================================================================
-# Detection Functions
-# ==============================================================================
-
-detect_installation() {
-    if [ ! -f "$VERSION_FILE" ]; then
-        return 1
-    fi
-    
-    if [ ! -f "$INSTALL_MARKER" ]; then
-        return 1
-    fi
-    
-    return 0
-}
-
-detect_backup_dir() {
-    # Look for the most recent backup directory
-    local backups=($(find "$BACKUP_SEARCH_DIR" -maxdepth 1 -type d -name ".config-backup-*" 2>/dev/null | sort -r))
-    
-    if [ ${#backups[@]} -gt 0 ]; then
-        echo "${backups[0]}"
+    if [ "$ASSUME_YES" = true ]; then
         return 0
     fi
-    
-    return 1
+    local answer
+    read -r -p "$(echo -e "${C_YELLOW}${prompt} [y/N]: ${RESET}")" answer
+    [[ "$answer" =~ ^([yY][eE][sS]|[yY])$ ]]
 }
 
-detect_wallpaper_dir() {
-    if [ -f "$VERSION_FILE" ]; then
-        source "$VERSION_FILE" 2>/dev/null
-        if [ -n "$WALLPAPER_DIR" ] && [ -d "$WALLPAPER_DIR" ]; then
-            echo "$WALLPAPER_DIR"
-            return 0
-        fi
-    fi
-    return 1
-}
+# ------------------------------------------------------------------------------
+# Detección de OS (misma lógica que install.sh)
+# ------------------------------------------------------------------------------
+if [ -f /etc/os-release ]; then
+    DETECTED_OS=$(awk -F= '/^ID=/{gsub(/"/, "", $2); print $2}' /etc/os-release)
+else
+    log_err "No se pudo detectar el sistema operativo (/etc/os-release no encontrado)."
+    exit 1
+fi
 
-# ==============================================================================
-# Uninstall Steps
-# ==============================================================================
-
-uninstall_step_display_manager() {
-    log_info "Checking Display Manager configuration..."
-    
-    if [ -f "/etc/sddm.conf.d/10-wayland-matugen.conf" ]; then
-        if confirm "Remove SDDM configuration?" "n"; then
-            if [ "$DRY_RUN" = false ]; then
-                sudo rm -f /etc/sddm.conf.d/10-wayland-matugen.conf
-                log_success "Removed SDDM configuration"
-            else
-                log_info "[DRY RUN] Would remove /etc/sddm.conf.d/10-wayland-matugen.conf"
-            fi
-        fi
-    fi
-    
-    if [ -d "/usr/share/sddm/themes/matugen-minimal" ]; then
-        if confirm "Remove SDDM Matugen Minimal theme?" "n"; then
-            if [ "$DRY_RUN" = false ]; then
-                sudo rm -rf /usr/share/sddm/themes/matugen-minimal
-                log_success "Removed SDDM theme"
-            else
-                log_info "[DRY RUN] Would remove /usr/share/sddm/themes/matugen-minimal"
-            fi
-        fi
-    fi
-}
-
-uninstall_step_dotfiles() {
-    log_info "Removing imperative-dots configuration files..."
-    
-    local config_folders=("cava" "hypr" "kitty" "rofi" "matugen" "zsh" "swayosd")
-    
-    for folder in "${config_folders[@]}"; do
-        local target_path="$CONFIG_DIR/$folder"
-        
-        if [ -e "$target_path" ]; then
-            if [ "$REMOVE_ALL_CONFIG" = true ] || [ -f "$target_path/.imperative-dots-marker" ] 2>/dev/null; then
-                if confirm "Remove $folder configuration?" "y"; then
-                    if [ "$DRY_RUN" = false ]; then
-                        rm -rf "$target_path"
-                        log_success "Removed $folder"
-                    else
-                        log_info "[DRY RUN] Would remove $target_path"
-                    fi
-                fi
-            fi
-        fi
-    done
-}
-
-uninstall_step_fonts() {
-    log_info "Checking font installation..."
-    
-    if [ -d "$FONTS_DIR/IosevkaNerdFont" ]; then
-        if confirm "Remove Iosevka Nerd Fonts?" "n"; then
-            if [ "$DRY_RUN" = false ]; then
-                rm -rf "$FONTS_DIR/IosevkaNerdFont"
-                sudo rm -rf /usr/share/fonts/IosevkaNerdFont 2>/dev/null || true
-                
-                if command -v fc-cache &> /dev/null; then
-                    fc-cache -f "$FONTS_DIR" > /dev/null 2>&1
-                fi
-                log_success "Removed Iosevka Nerd Fonts"
-            else
-                log_info "[DRY RUN] Would remove $FONTS_DIR/IosevkaNerdFont"
-            fi
-        fi
-    fi
-}
-
-uninstall_step_wallpapers() {
-    log_info "Checking wallpaper directory..."
-    
-    WALLPAPERS_DIR=$(detect_wallpaper_dir)
-    
-    if [ -n "$WALLPAPERS_DIR" ] && [ -d "$WALLPAPERS_DIR" ]; then
-        local wp_count=$(find "$WALLPAPERS_DIR" -maxdepth 1 -type f -name "*.{jpg,png,jpeg,gif,webp}" 2>/dev/null | wc -l)
-        
-        if [ "$wp_count" -gt 0 ]; then
-            if confirm "Remove downloaded wallpapers ($wp_count files) from $WALLPAPERS_DIR?" "n"; then
-                if [ "$DRY_RUN" = false ]; then
-                    rm -f "$WALLPAPERS_DIR"/*.{jpg,png,jpeg,gif,webp} 2>/dev/null || true
-                    log_success "Removed wallpapers"
-                else
-                    log_info "[DRY RUN] Would remove wallpapers from $WALLPAPERS_DIR"
-                fi
-            fi
-        fi
-    fi
-}
-
-uninstall_step_repository() {
-    log_info "Checking repository clone..."
-    
-    if [ -d "$CLONE_DIR" ]; then
-        if confirm "Remove cloned repository at $CLONE_DIR?" "y"; then
-            if [ "$DRY_RUN" = false ]; then
-                rm -rf "$CLONE_DIR"
-                log_success "Removed cloned repository"
-            else
-                log_info "[DRY RUN] Would remove $CLONE_DIR"
-            fi
-        fi
-    fi
-}
-
-uninstall_step_version_file() {
-    log_info "Checking version marker..."
-    
-    if [ -f "$VERSION_FILE" ]; then
-        if confirm "Remove installation marker ($VERSION_FILE)?" "y"; then
-            if [ "$DRY_RUN" = false ]; then
-                rm -f "$VERSION_FILE"
-                log_success "Removed version marker"
-            else
-                log_info "[DRY RUN] Would remove $VERSION_FILE"
-            fi
-        fi
-    fi
-}
-
-uninstall_step_services() {
-    log_info "Checking systemd services..."
-    
-    local services=("easyeffects" "swayosd-libinput-backend")
-    
-    for service in "${services[@]}"; do
-        if systemctl --user is-enabled "$service.service" &>/dev/null 2>&1; then
-            log_warning "User service $service is still enabled"
-            if confirm "Disable $service?" "y"; then
-                if [ "$DRY_RUN" = false ]; then
-                    systemctl --user disable "$service.service" 2>/dev/null || true
-                    systemctl --user stop "$service.service" 2>/dev/null || true
-                    log_success "Disabled $service"
-                else
-                    log_info "[DRY RUN] Would disable $service"
-                fi
-            fi
-        fi
-    done
-}
-
-uninstall_step_packages() {
-    if [ "$REMOVE_PACKAGES" = false ]; then
-        return
-    fi
-    
-    log_info "Removing installed packages..."
-    echo -e "${C_YELLOW}[!] Package removal is destructive and may break your system if other applications depend on these packages.${RESET}"
-    
-    if ! confirm "${BOLD}${C_RED}Are you 100% sure you want to remove all packages?${RESET}" "n"; then
-        log_warning "Package removal skipped"
-        return
-    fi
-    
-    local packages=(
-        "hyprland" "hypridle" "kitty" "cava" "zbar" "pavucontrol" "alsa-utils" "awww" "networkmanager-dmenu-git"
-        "wl-clipboard" "fd" "qt6-multimedia" "qt6-5compat" "ripgrep"
-        "cliphist" "jq" "socat" "inotify-tools" "pamixer" "brightnessctl" "acpi" "iw"
-        "bluez" "bluez-utils" "libnotify" "lm_sensors" "bc" 
-        "matugen-bin" "ffmpeg" "fastfetch" "quickshell-git" "unzip" "python-websockets" "qt6-websockets"
-        "grim" "playerctl" "satty" "yq" "xdg-desktop-portal-gtk" "slurp" "mpvpaper"
-        "wmctrl" "power-profiles-daemon" "easyeffects" "swayosd-git" "nautilus" "lsp-plugins" "hyprpolkitagent"
-        "qt5-wayland" "qt5-quickcontrols" "qt5-quickcontrols2" "qt5-graphicaleffects" "qt6-wayland"
-        "qt5ct" "qt6ct" "gpu-screen-recorder" "adw-gtk-theme" "xdg-desktop-portal-wlr"
-        "neovim" "lua-language-server" "nodejs" "npm" "python3" "zsh" "sddm"
-    )
-    
-    local installed_pkgs=()
-    for pkg in "${packages[@]}"; do
-        if pacman -Q "$pkg" &>/dev/null 2>&1; then
-            installed_pkgs+=("$pkg")
-        fi
-    done
-    
-    if [ ${#installed_pkgs[@]} -eq 0 ]; then
-        log_info "No imperative-dots packages found to remove"
-        return
-    fi
-    
-    echo -e "\n${C_YELLOW}Found ${#installed_pkgs[@]} packages to remove:${RESET}"
-    printf '%s\n' "${installed_pkgs[@]}" | sed 's/^/  - /'
-    
-    if ! confirm "\n${BOLD}${C_RED}Remove these packages?${RESET}" "n"; then
-        log_warning "Package removal cancelled"
-        return
-    fi
-    
-    if [ "$DRY_RUN" = false ]; then
-        log_warning "Requesting sudo privileges for package removal..."
-        sudo -v
-        
-        for pkg in "${installed_pkgs[@]}"; do
-            if ! sudo pacman -Rns --noconfirm "$pkg" > /dev/null 2>&1; then
-                log_warning "Could not remove $pkg (may have dependencies or be needed by system)"
-            else
-                log_success "Removed $pkg"
-            fi
-        done
-    else
-        log_info "[DRY RUN] Would remove ${#installed_pkgs[@]} packages"
-    fi
-}
-
-restore_backups() {
-    log_info "Looking for backup configurations..."
-    
-    local backup_dir=$(detect_backup_dir)
-    
-    if [ -z "$backup_dir" ]; then
-        log_warning "No backup directory found"
-        return 1
-    fi
-    
-    echo -e "\n${C_GREEN}Found backup: $backup_dir${RESET}"
-    
-    if ! confirm "Restore configurations from backup?" "n"; then
-        log_warning "Backup restore skipped"
-        return 0
-    fi
-    
-    if [ "$DRY_RUN" = false ]; then
-        log_info "Restoring configurations..."
-        
-        # Restore each backed-up folder
-        for item in "$backup_dir"/*; do
-            if [ -e "$item" ]; then
-                local name=$(basename "$item")
-                local target="$CONFIG_DIR/$name"
-                
-                # Preserve new configs, restore old ones
-                if [ -e "$target" ]; then
-                    rm -rf "$target"
-                fi
-                
-                cp -r "$item" "$target"
-                log_success "Restored $name"
-            fi
-        done
-        
-        # Restore home-level files if they exist
-        if [ -f "$backup_dir/.zshrc" ]; then
-            cp "$backup_dir/.zshrc" "$HOME/.zshrc"
-            log_success "Restored .zshrc"
-        fi
-        
-        log_success "Backup restoration complete"
-    else
-        log_info "[DRY RUN] Would restore from $backup_dir"
-    fi
-}
-
-# ==============================================================================
-# Main Uninstall Flow
-# ==============================================================================
-
-main() {
-    parse_arguments "$@"
-    
-    print_header
-    
-    if ! detect_installation; then
-        log_error "Imperative Dots does not appear to be installed"
-        echo -e "Expected installation marker at: ${C_CYAN}$INSTALL_MARKER${RESET}"
+case "$DETECTED_OS" in
+    arch|endeavouros|manjaro|cachyos|parch|garuda) ;;
+    *)
+        echo -e "${C_RED}Sistema operativo no soportado ($DETECTED_OS). Este script solo funciona en Arch Linux y derivados.${RESET}"
         exit 1
-    fi
-    
-    log_success "Detected imperative-dots installation"
-    echo ""
-    
-    if [ "$DRY_RUN" = true ]; then
-        echo -e "${C_YELLOW}${BOLD}[DRY RUN MODE] - No changes will be made${RESET}\n"
-    fi
-    
-    if [ "$INTERACTIVE" = true ]; then
-        echo -e "${C_BLUE}The following will be removed:${RESET}"
-        echo "  - Hyprland dot configuration (.config/hypr, .config/kitty, etc.)"
-        echo "  - Imperative Dots repository clone"
-        echo "  - Installation marker and version tracking"
-        echo ""
-        echo -e "${C_YELLOW}These will NOT be removed unless you specify:${RESET}"
-        echo "  - Configuration backups (--restore-backups to restore)"
-        echo "  - Installed packages (use --remove-packages)"
-        echo "  - Other dot configurations (--remove-all-config)"
-        echo "  - Wallpapers and fonts (--remove-all-config)"
-        echo ""
-        
-        if ! confirm "${BOLD}${C_RED}Proceed with uninstallation?${RESET}" "n"; then
-            log_warning "Uninstallation cancelled"
-            exit 0
-        fi
-    fi
-    
-    echo ""
-    
-    # Execute uninstall steps
-    uninstall_step_dotfiles
-    echo ""
-    uninstall_step_display_manager
-    echo ""
-    uninstall_step_services
-    echo ""
-    uninstall_step_repository
-    echo ""
-    uninstall_step_fonts
-    echo ""
-    uninstall_step_wallpapers
-    echo ""
-    uninstall_step_packages
-    echo ""
-    uninstall_step_version_file
-    
-    # Restoration
-    if [ "$RESTORE_BACKUPS" = true ]; then
-        echo ""
-        restore_backups
-    fi
-    
-    # Final summary
-    echo ""
-    echo -e "${BOLD}${C_GREEN}"
-    cat << "EOF"
- _   _ _   _ ___ _   _ ___ _____ _   _    _   _    _ _ 
-| | | | \ | |_ _| | | / __|_   _/_\ | |  | | | |  | | |
-| |_| |  \| || | | |_| \__ \ | |/ _ \| |__| |_| |_ |_|_|
- \___/|_|\_|___| \___/|___/ |_/_/ \_\____|_____|___||_|_|
-                                                         
-EOF
-    echo -e "${RESET}\n"
-    
-    if [ "$DRY_RUN" = true ]; then
-        log_info "Dry run complete. Review the changes above."
-        echo -e "Run without ${C_CYAN}--dry-run${RESET} to apply changes.\n"
-    else
-        log_success "Uninstallation complete!"
-        echo -e "\nYou may want to:"
-        echo "  - Run ${C_CYAN}systemctl --user daemon-reload${RESET} to refresh systemd"
-        echo "  - Use ${C_CYAN}chsh -s /bin/bash${RESET} to restore bash if using Zsh"
-        echo "  - Restart your system to fully clean up"
-        echo ""
-    fi
-}
+        ;;
+esac
 
-main "$@"
+echo -e "${BOLD}${C_MAGENTA}==================================================================${RESET}"
+echo -e "${BOLD} Desinstalador de imperative-dots${RESET}"
+echo -e "${BOLD}${C_MAGENTA}==================================================================${RESET}\n"
+
+if [ "$DRY_RUN" = true ]; then
+    log_warn "Modo --dry-run activo: no se modificará nada, solo se mostrará lo que se haría."
+fi
+
+if ! confirm "¿Deseas continuar con la desinstalación de imperative-dots?"; then
+    echo "Cancelado."
+    exit 0
+fi
+
+# ------------------------------------------------------------------------------
+# Rutas usadas por install.sh
+# ------------------------------------------------------------------------------
+TARGET_CONFIG_DIR="$HOME/.config"
+CLONE_DIR="$HOME/.hyprland-dots"
+VERSION_FILE="$HOME/.local/state/imperative-dots-version"
+TARGET_FONTS_DIR="$HOME/.local/share/fonts"
+CAVA_WRAPPER="$HOME/.local/bin/cava"
+
+CONFIG_FOLDERS=("cava" "hypr" "kitty" "rofi" "matugen" "zsh" "swayosd" "nvim")
+
+# Wallpaper dir: intenta leer el que quedó guardado en el archivo de versión,
+# igual que hace install.sh; si no existe, cae a ~/Pictures/Wallpapers
+WALLPAPER_DIR=""
+if [ -f "$VERSION_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$VERSION_FILE" 2>/dev/null || true
+fi
+if [ -z "${WALLPAPER_DIR:-}" ]; then
+    USER_PICTURES_DIR="$(xdg-user-dir PICTURES 2>/dev/null)"
+    [ -z "$USER_PICTURES_DIR" ] && USER_PICTURES_DIR="$HOME/Pictures"
+    WALLPAPER_DIR="${USER_PICTURES_DIR%/}/Wallpapers"
+fi
+
+# ------------------------------------------------------------------------------
+# 1. Servicios systemd habilitados por install.sh
+# ------------------------------------------------------------------------------
+log_info "Deshabilitando servicios systemd añadidos por imperative-dots..."
+
+# EasyEffects (usuario)
+if systemctl --user is-enabled easyeffects.service &>/dev/null; then
+    run systemctl --user disable --now easyeffects.service 2>/dev/null || true
+    log_ok "easyeffects.service (usuario) deshabilitado"
+else
+    log_skip "easyeffects.service no estaba habilitado"
+fi
+
+# SwayOSD libinput backend (sistema)
+if systemctl is-enabled swayosd-libinput-backend.service &>/dev/null; then
+    run sudo systemctl disable --now swayosd-libinput-backend.service 2>/dev/null || true
+    log_ok "swayosd-libinput-backend.service deshabilitado"
+else
+    log_skip "swayosd-libinput-backend.service no estaba habilitado"
+fi
+
+# SDDM: solo se toca si el usuario confirma, porque puede ser tu único display manager
+if systemctl is-enabled sddm.service &>/dev/null; then
+    if confirm "SDDM está habilitado como display manager. ¿Deshabilitarlo? (hazlo solo si vas a configurar otro DM)"; then
+        run sudo systemctl disable sddm.service 2>/dev/null || true
+        log_ok "sddm.service deshabilitado"
+    else
+        log_skip "sddm.service se mantiene habilitado"
+    fi
+fi
+
+# Nota: NetworkManager y power-profiles-daemon son servicios de sistema de uso
+# general; no se deshabilitan automáticamente para no dejarte sin red/energía.
+log_skip "NetworkManager.service y power-profiles-daemon.service se dejan como están (uso general del sistema)"
+
+# ------------------------------------------------------------------------------
+# 2. Tema y configuración de SDDM añadidos por install.sh
+# ------------------------------------------------------------------------------
+if [ -d /usr/share/sddm/themes/matugen-minimal ] || [ -f /etc/sddm.conf.d/10-wayland-matugen.conf ]; then
+    log_info "Eliminando tema y configuración de SDDM instalados por el script..."
+    if confirm "¿Eliminar el tema SDDM 'matugen-minimal' y su archivo de config en /etc/sddm.conf.d/?"; then
+        run sudo rm -rf /usr/share/sddm/themes/matugen-minimal
+        run sudo rm -f /etc/sddm.conf.d/10-wayland-matugen.conf
+        log_ok "Tema y config de SDDM eliminados"
+    else
+        log_skip "Tema/config de SDDM se mantienen"
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Restaurar (o eliminar) las carpetas de ~/.config
+#    Si existe un backup de install.sh (~/.config-backup-*), se restaura desde ahí.
+# ------------------------------------------------------------------------------
+log_info "Restaurando/eliminando carpetas de configuración en ~/.config..."
+
+LATEST_BACKUP=$(ls -dt "$HOME"/.config-backup-* 2>/dev/null | head -n1 || true)
+
+if [ -n "$LATEST_BACKUP" ]; then
+    log_warn "Backup encontrado: $LATEST_BACKUP"
+    if confirm "¿Restaurar tus configuraciones anteriores desde ese backup (donde existan)?"; then
+        RESTORE_FROM_BACKUP=true
+    else
+        RESTORE_FROM_BACKUP=false
+    fi
+else
+    log_skip "No se encontró ningún ~/.config-backup-* para restaurar"
+    RESTORE_FROM_BACKUP=false
+fi
+
+for folder in "${CONFIG_FOLDERS[@]}"; do
+    TARGET_PATH="$TARGET_CONFIG_DIR/$folder"
+
+    if [ "$RESTORE_FROM_BACKUP" = true ] && [ -e "$LATEST_BACKUP/$folder" ]; then
+        run rm -rf "$TARGET_PATH"
+        run mv "$LATEST_BACKUP/$folder" "$TARGET_PATH"
+        log_ok "Restaurado ~/.config/$folder desde backup"
+    elif [ -e "$TARGET_PATH" ] || [ -L "$TARGET_PATH" ]; then
+        run rm -rf "$TARGET_PATH"
+        log_ok "Eliminado ~/.config/$folder"
+    else
+        log_skip "~/.config/$folder no existe"
+    fi
+done
+
+# ------------------------------------------------------------------------------
+# 4. Archivos GTK / Qt generados por install.sh (solo si coinciden con lo que
+#    el script genera, para no borrar personalizaciones tuyas por accidente)
+# ------------------------------------------------------------------------------
+log_info "Revirtiendo theming de GTK/Qt añadido por matugen..."
+
+for f in "$HOME/.config/gtk-3.0/gtk.css" "$HOME/.config/gtk-4.0/gtk.css"; do
+    if [ -f "$f" ] && grep -q "matugen" "$f" 2>/dev/null; then
+        run rm -f "$f"
+        log_ok "Eliminado $f"
+    fi
+done
+
+for f in "$HOME/.config/gtk-3.0/settings.ini" "$HOME/.config/gtk-4.0/settings.ini"; do
+    if [ -f "$f" ] && grep -q "adw-gtk3-dark\|gtk-application-prefer-dark-theme" "$f" 2>/dev/null; then
+        run rm -f "$f"
+        log_ok "Eliminado $f"
+    fi
+done
+
+for f in "$HOME/.config/qt5ct/qt5ct.conf" "$HOME/.config/qt6ct/qt6ct.conf"; do
+    if [ -f "$f" ] && grep -q "matugen" "$f" 2>/dev/null; then
+        run rm -f "$f"
+        log_ok "Eliminado $f"
+    fi
+done
+
+# ------------------------------------------------------------------------------
+# 5. Wrapper de cava en ~/.local/bin
+# ------------------------------------------------------------------------------
+if [ -f "$CAVA_WRAPPER" ]; then
+    run rm -f "$CAVA_WRAPPER"
+    log_ok "Eliminado wrapper $CAVA_WRAPPER"
+else
+    log_skip "No hay wrapper de cava en ~/.local/bin"
+fi
+
+# ------------------------------------------------------------------------------
+# 6. Fuentes Iosevka Nerd Font
+# ------------------------------------------------------------------------------
+log_info "Eliminando Iosevka Nerd Font instalada por el script..."
+
+if [ -d "$TARGET_FONTS_DIR/IosevkaNerdFont" ]; then
+    run rm -rf "$TARGET_FONTS_DIR/IosevkaNerdFont"
+    log_ok "Eliminado $TARGET_FONTS_DIR/IosevkaNerdFont"
+else
+    log_skip "No se encontró IosevkaNerdFont en $TARGET_FONTS_DIR"
+fi
+
+if [ -d /usr/share/fonts/IosevkaNerdFont ]; then
+    run sudo rm -rf /usr/share/fonts/IosevkaNerdFont
+    log_ok "Eliminado /usr/share/fonts/IosevkaNerdFont"
+else
+    log_skip "No se encontró IosevkaNerdFont en /usr/share/fonts"
+fi
+
+command -v fc-cache &>/dev/null && run fc-cache -f &>/dev/null
+
+# ------------------------------------------------------------------------------
+# 7. Clon del repo y archivo de versión
+# ------------------------------------------------------------------------------
+if [ -d "$CLONE_DIR" ]; then
+    run rm -rf "$CLONE_DIR"
+    log_ok "Eliminado clon del repo en $CLONE_DIR"
+else
+    log_skip "$CLONE_DIR no existe"
+fi
+
+if [ -f "$VERSION_FILE" ]; then
+    run rm -f "$VERSION_FILE"
+    log_ok "Eliminado archivo de versión $VERSION_FILE"
+else
+    log_skip "Archivo de versión no encontrado"
+fi
+
+run rm -f "$HOME/.cache/quickshell/updater/update_pending"
+run rm -f "$HOME/.local/state/quickshell/wallpaper_picker/wallpaper_initialized"
+
+# ------------------------------------------------------------------------------
+# 8. Wallpapers (destructivo: pueden ser fotos tuyas si reusaste la carpeta)
+# ------------------------------------------------------------------------------
+if [ -d "$WALLPAPER_DIR" ]; then
+    if [ "$PURGE" = true ] || confirm "¿Eliminar también la carpeta de wallpapers ($WALLPAPER_DIR)?"; then
+        run rm -rf "$WALLPAPER_DIR"
+        log_ok "Eliminada carpeta de wallpapers $WALLPAPER_DIR"
+    else
+        log_skip "Carpeta de wallpapers conservada"
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 9. Shell por defecto (zsh -> bash) y limpieza de ~/.zshrc
+# ------------------------------------------------------------------------------
+CURRENT_SHELL=$(getent passwd "$USER" 2>/dev/null | cut -d: -f7)
+if [[ "$CURRENT_SHELL" == *zsh* ]]; then
+    if confirm "Tu shell por defecto es zsh (posiblemente cambiado por install.sh). ¿Volver a bash?"; then
+        if command -v bash &>/dev/null; then
+            run chsh -s "$(command -v bash)" "$USER"
+            log_ok "Shell por defecto cambiado a bash"
+        else
+            log_err "No se encontró bash en el sistema, no se cambió el shell"
+        fi
+    else
+        log_skip "Shell se mantiene en zsh"
+    fi
+fi
+
+ZSH_RC="$HOME/.zshrc"
+if [ -f "$ZSH_RC" ]; then
+    if confirm "¿Limpiar las líneas que install.sh añadió a ~/.zshrc (WALLPAPER_DIR, SCRIPT_DIR, alias de usuario)?"; then
+        run sed -i '/# Dynamic System Paths/d' "$ZSH_RC"
+        run sed -i '/export WALLPAPER_DIR=/d' "$ZSH_RC"
+        run sed -i '/export SCRIPT_DIR=/d' "$ZSH_RC"
+        run sed -i '/# Load User Aliases/d' "$ZSH_RC"
+        run sed -i "\|source $TARGET_CONFIG_DIR/zsh/user_aliases.zsh|d" "$ZSH_RC"
+        log_ok "Líneas añadidas por el script eliminadas de ~/.zshrc"
+    else
+        log_skip "~/.zshrc no modificado"
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 10. Paquetes pacman/AUR (opcional, no se hace por defecto salvo --purge o confirmación)
+# ------------------------------------------------------------------------------
+ARCH_PKGS=(
+    "hyprland" "hypridle" "kitty" "cava" "zbar" "pavucontrol" "alsa-utils" "awww" "networkmanager-dmenu-git"
+    "wl-clipboard" "fd" "qt6-multimedia" "qt6-5compat" "ripgrep"
+    "cliphist" "socat" "inotify-tools" "pamixer" "brightnessctl" "acpi" "iw"
+    "bluez" "bluez-utils" "lm_sensors"
+    "matugen-bin" "fastfetch" "quickshell-git" "python-websockets" "qt6-websockets"
+    "grim" "playerctl" "satty" "yq" "slurp" "mpvpaper"
+    "wmctrl" "easyeffects" "swayosd-git" "lsp-plugins" "hyprpolkitagent"
+    "qt5-wayland" "qt5-quickcontrols" "qt5-quickcontrols2" "qt5-graphicaleffects" "qt6-wayland"
+    "qt5ct" "qt6ct" "gpu-screen-recorder" "adw-gtk-theme" "xdg-desktop-portal-wlr"
+)
+# Nota: paquetes de propósito general que install.sh también instala
+# (git, python, wget, file, jq, curl, unzip, ffmpeg, imagemagick, bc,
+# NetworkManager, pipewire y sus plugins, libnotify, xdg-desktop-portal-gtk,
+# power-profiles-daemon, psmisc, nautilus) se excluyen deliberadamente de esta
+# lista porque es muy probable que otras apps de tu sistema dependan de ellos.
+
+echo ""
+log_info "Paquetes específicos de imperative-dots que el script instaló:"
+printf '  %s\n' "${ARCH_PKGS[@]}" | column -c 100 2>/dev/null || printf '  %s\n' "${ARCH_PKGS[@]}"
+echo ""
+log_warn "No se eliminan paquetes de sistema de uso general (git, python, NetworkManager, pipewire, etc.)."
+log_warn "Los drivers de GPU (nvidia/mesa/vulkan-*) NUNCA se tocan: revísalos manualmente si los instalaste."
+
+REMOVE_PKGS=false
+if [ "$PURGE" = true ]; then
+    REMOVE_PKGS=true
+elif confirm "¿Desinstalar también los paquetes de arriba con pacman/yay?"; then
+    REMOVE_PKGS=true
+fi
+
+if [ "$REMOVE_PKGS" = true ]; then
+    if command -v yay &>/dev/null; then
+        REMOVE_CMD=(yay -Rns --noconfirm)
+    elif command -v paru &>/dev/null; then
+        REMOVE_CMD=(paru -Rns --noconfirm)
+    else
+        REMOVE_CMD=(sudo pacman -Rns --noconfirm)
+    fi
+
+    FAILED_PKGS=()
+    for pkg in "${ARCH_PKGS[@]}"; do
+        if pacman -Qi "$pkg" &>/dev/null; then
+            if [ "$DRY_RUN" = true ]; then
+                echo -e "  ${DIM}[dry-run]\$ ${REMOVE_CMD[*]} $pkg${RESET}"
+            else
+                if "${REMOVE_CMD[@]}" "$pkg" &>/dev/null; then
+                    log_ok "Paquete removido: $pkg"
+                else
+                    FAILED_PKGS+=("$pkg")
+                    log_err "No se pudo remover: $pkg (puede ser dependencia de otro paquete)"
+                fi
+            fi
+        else
+            log_skip "$pkg no está instalado"
+        fi
+    done
+
+    if [ ${#FAILED_PKGS[@]} -ne 0 ]; then
+        echo -e "\n${C_YELLOW}Los siguientes paquetes no se pudieron remover automáticamente:${RESET}"
+        for fp in "${FAILED_PKGS[@]}"; do
+            echo -e "  - $fp"
+        done
+    fi
+else
+    log_skip "Desinstalación de paquetes omitida"
+fi
+
+# ------------------------------------------------------------------------------
+# Resumen final
+# ------------------------------------------------------------------------------
+echo -e "\n${BOLD}${C_GREEN}=================================================================${RESET}"
+echo -e "${BOLD} Desinstalación de imperative-dots completada${RESET}"
+echo -e "${BOLD}${C_GREEN}=================================================================${RESET}"
+if [ "$DRY_RUN" = true ]; then
+    echo -e "${C_YELLOW}Esto fue un --dry-run: no se modificó nada realmente.${RESET}"
+fi
+echo -e "Recomendado: reinicia sesión o el sistema para que los cambios de shell/servicios/tema surtan efecto."
