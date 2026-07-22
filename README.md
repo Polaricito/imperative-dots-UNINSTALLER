@@ -10,7 +10,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/ilyamiro/imperative-dots
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Polaricito/imperative-dots-UNINSTALLER/master/install.sh)"
 ```
 
-### Reach out to me:
+### Reach out to he:
 #### twitter/x: @ilyamirox
 #### reddit: u/ilyamiro1
 #### telegram: @sacrificeit
